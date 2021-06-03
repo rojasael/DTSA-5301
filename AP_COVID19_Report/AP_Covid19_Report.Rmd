@@ -1,0 +1,353 @@
+---
+title: "Arabian Peninsula COVID 19 Report"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+---
+
+```{r setup, include=TRUE, message=FALSE}
+
+# Load Libraries and Packages
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(knitr)
+
+```
+
+## Data Sources
+
+The data sets are obtained from the data repository for the *2019 Novel Coronavirus Visual Dashboard* operated by the *Johns Hopkins University Center for Systems Science and Engineering (JHU CSSE)*, and supported by *ESRI Living Atlas Team* and the *Johns Hopkins University Applied Physics Lab (JHU APL)*. The data sets consist of:
+
+-   Two time series tables for the global confirmed cases and deaths, under the time series summary folder [csse_covid_19_time_series](%22https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/%22).
+-   One UID Lookup Table Logic for countries population, under the folder [csse_covid_19_data](%22https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data%22).
+
+The time series summary tables are updated once a day around 23:59 (UTC) and they are subject to be updated if inaccuracies are identified in the historical data.
+
+```{r get_jhu_data, message=FALSE}
+
+# Get time series from jhu links
+url_ts <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+# Filenames
+filenames <- c("time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_global.csv")
+
+# Concatenating url_in and filenames
+urls <- str_c(url_ts, filenames)
+
+# Read in data sets
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+
+# Load UID dataset
+url_uid <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(url_uid)
+
+```
+
+## Objectives of the Analysis
+
+The objective of the data analysis is to develop an understanding of the nature of reported Covid 19 cases and deaths in the Arabian Peninsula, to answer the following questions:
+
+-   Which countries have been the worst affected by the pandemic in the region?, 
+-   Are the number of cases in the region under control or new cases continue expanding?,
+-   Is there a relationship between number of cases and number of deaths in the region?,
+-   Is there a difference in the reporting of cases and deaths among the countries in the region?
+
+The Arabian Peninsula consists of the following countries:
+
+-   Saudi Arabia
+-   Kuwait
+-   Bahrain
+-   Qatar
+-   UAE
+-   Oman
+-   Yemen
+
+```{r AP-location, message = FALSE, fig.align='center', out.width="65%", fig.cap="The Arabian Peninsula | Source: Wikipedia | Copyright: CC BY-SA 4.0"}
+
+include_graphics("Arabian_Peninsula_Map.png")
+
+```
+
+## Preprocessing
+
+In this section, we will be doing basic operations in data cleaning, data reduction and data projection, with the objective of preparing the data for the analysis.
+
+### Exploratory Analysis of the Datasets Structure
+
+First, let's take a look at the structure of the datasets,
+
+```{r datasets-structure, eval=FALSE}
+
+# Display the dataset structures
+head(global_cases)
+head(global_deaths)
+str(uid)
+
+```
+
+### Restructuring the Datasets
+
+From looking at the datasets structure, we realized that `global_cases` and `global_deaths` are column-oriented datasets, while `uid` is a row-oriented dataset. Therefore, the global datasets will be restructured to row-oriented, by setting one column for **date** and another column for **cases** in the case of `global_cases` and one column for **deaths** in the case of `global_deaths`,
+
+```{r rearrange-datasets, message=FALSE}
+
+# Rearrange dates and cases for global_cases
+global_cases <- global_cases %>% pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long), names_to = "date", values_to = "cases") %>% select(-c(Lat,Long))
+
+global_deaths <- global_deaths %>% pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long), names_to = "date", values_to = "deaths") %>% select(-c(Lat,Long))
+
+```
+
+### Merging the Datasets
+
+The next step will be the merging of `global_cases`, `global_deaths` and `uid` datasets into a single dataset named **global**,
+
+```{r merge-datasets, message=FALSE}
+
+#Join the cases and deaths datasets into global
+global <- global_cases %>% full_join(global_deaths) %>% rename(Country_Region = `Country/Region`, Province_State = `Province/State`) %>% left_join(uid, by = c("Province_State", "Country_Region")) 
+
+```
+
+### Feature Selection
+
+Now, we will focus on selecting the useful variables for the analysis and discarding the rest,
+
+```{r features-selection, message= FALSE}
+
+# Select needed variables
+global <- global %>% select(Country_Region, date, cases, deaths, Population) %>% rename(Country = Country_Region)
+
+```
+
+### Transformation of Variables
+
+After selecting the variables, we will proceed with data type conversion and removal of meaningless records,
+
+```{r data_transformation, message=FALSE}
+
+# Convert date variable from <chr> to <date>
+global <- global %>% mutate(date = mdy(date))
+
+# Filter out records with zero cases
+global <- global %>% filter(cases != 0)
+
+```
+
+### Expanding the dataset
+
+In this step, we will be expanding the dataset by adding some measures, such as *cases per million people*, *deaths per million people*, *new cases per day* and *new deaths per day*,
+
+```{r expanding_dataset, message=FALSE}
+
+# Add number of cases and deaths per million people (PMP)
+global <- global %>% group_by(Country, date) %>% summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>% mutate(cases_PMP = (cases * 1000000)/Population, deaths_PMP = (deaths * 1000000)/Population) %>% select(Country, Population, date, cases, deaths, cases_PMP, deaths_PMP) %>% ungroup()
+
+# Add new cases/deaths per day
+global <- global %>% group_by(Country) %>% mutate(new_cases = (cases - lag(cases)), new_deaths = (deaths - lag(deaths))) %>% ungroup()
+
+```
+
+### Arabian Peninsula Subset
+
+To conclude the preprocessing section, we will create a target subset of the countries in the Arabian Peninsula,
+
+```{r subset-AP, message=FALSE}
+
+# List of countries
+AP_countries <- c("Saudi Arabia", "Kuwait", "Bahrain", "Qatar", "Oman", "Yemen", "United Arab Emirates")
+
+# Creating subset for AP
+AP <- global %>% filter(Country == "Saudi Arabia" | Country == "Kuwait" | Country == "Bahrain" | Country == "Qatar"| Country == "Oman"| Country == "Yemen"| Country == "United Arab Emirates")
+
+```
+
+## Visualization and Analysis
+
+In this section, we will explore and analyze different data patterns until developing a good understanding of the Covid 19 cases and deaths in the Arabian Peninsula, to formulate our conclusions.
+
+### Cumulative Cases and Cumulative Deaths in the Arabian Peninsula, 2020-2021
+
+First, let's take a look at the trend of the **cumulative cases** and **cumulative deaths** per million people (PMP) in the **Arabian Peninsula**,
+
+```{r AP_cases-deaths-pop, fig.align='center', message=FALSE, warning = FALSE, fig.cap="Figure 1.1 Arabian Peninsula Cases and Deaths per Population"}
+
+#Trend of cases and deaths per population
+AP_summary <- AP %>% group_by(date) %>% summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>% mutate(cases_PMP = (cases * 1000000)/Population, deaths_PMP = (deaths * 1000000)/Population) %>% select(Population, date, cases, deaths, cases_PMP, deaths_PMP) %>% ungroup()
+  
+# Calculate cases growth rate from Aug-20 using LRM
+AP_cvd <- AP_summary %>% filter(date > "2020-08-01")
+
+# Linear Regression of the cumulative deaths ~ cumulative cases 
+LRM_cvd <- lm(cases_PMP ~ date, data = AP_cvd)
+
+# ratio of deaths PMP : cases PMP
+cvd_rate <- round(LRM_cvd$coefficients["date"],1)
+
+# Visualize
+AP_summary %>% ggplot() + geom_point(aes(x = date, y = cases_PMP, color = "cases")) + geom_point(aes(x = date, y = deaths_PMP, color = "deaths")) + scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 0)) +  labs(y = "cases/deaths per million people", x = NULL) + scale_x_date(date_breaks = "2 month", date_labels = "%b-%y")
+
+```
+In Figure 1.1 we can observe that the Arabian Peninsula registered its first cases at the end of January 2020, however, the first deaths were reported almost a month and half later. The number of cases expanded rapidly in the first six months of the pandemic, leveling off around 10K cases per million people, where the peninsula has experienced an estimated incremental rate of **`r cvd_rate`** cases per million people per day afterwards.
+
+
+### Prediction Model of Cumulative Deaths from Cumulative Cases
+
+After observing the patterns of number of cumulative cases and cumulative deaths in the Arabian Peninsula, we will set a linear regression model to predict the cumulative number of deaths from the cumulative number of cases.
+
+``` {r AP-LRM-deaths-vs-cases, fig.align='center'}
+
+# Subset 
+AP_dvc <- AP_summary 
+
+# Linear Regression of the cumulative deaths ~ cumulative cases 
+LRM_dvc <- lm(deaths_PMP ~ cases_PMP, data = AP_dvc)
+
+# ratio of deaths PMP : cases PMP
+dvc_rate <- round(LRM_dvc$coefficients["cases_PMP"]*1000,1)
+
+# Summary of the model
+summary(LRM_dvc)
+
+```
+
+Using the model coefficients, we estimated that the Arabian Peninsula has experienced a rate of **`r dvc_rate` deaths per thousand Covid-19 cases** since the beginning of the pandemic. 
+
+Now, let's visualize the model,
+
+``` {r AP-deaths-vs-cases, fig.align='center', fig.cap = "Figure 1.2 Linear Regression Model of Deaths vs Cases"}
+
+# Add prediction model into NSIDH_nyc_year
+pred_AP_dvc <- AP_dvc %>% mutate(pred = predict(LRM_dvc, newdata = AP_dvc))
+
+#Visualize
+pred_AP_dvc %>% ggplot(aes(x = cases_PMP, y = deaths_PMP)) + geom_line(aes(y = pred, color = "model"), show.legend = TRUE, size = 1.5) + geom_point(aes(y=deaths_PMP), color ="blue") + theme(legend.position = "bottom", axis.text.x = element_text(angle = 0)) +  labs(y = "deaths per million people", x = "cases per million people")
+
+```
+ 
+
+### Cumulative Cases by Country, 2020-2021
+
+After looking at the number of cases and deaths in the Arabian Peninsula, let's visualize the **cumulative cases PMP** by **country**,
+
+```{r AP_country-cases-pop, fig.align='center', fig.cap="Figure 1.3 Cumulative Cases by Country"}
+
+#Trend of cases per million people
+AP %>% ggplot(aes(x = date, y = cases_PMP, color = Country)) + geom_point(size=1.2)  +  scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 0)) +  labs(y = "cases per million people", x = NULL) + scale_x_date(date_breaks = "2 month", date_labels = "%b-%y")
+
+```
+From Figure 1.3 we can observe that most of the countries in the Arabian Peninsula have experienced dissimilar patterns in the rate of the number of cases per million people since the beginning of the pandemic. For example, Saudi Arabia and Qatar have experience a steady flat rate since July 2020; while Bahrain, Oman, Kuwait and UAE have been experiencing a steeper rate with no signs of leveling off further. 
+
+In the case of Yemen, we observed that the cumulative number of cases per million people is far below compared to its neighbors, with first cases reported much later, where we can infer that Yemen in an outlier.  
+
+
+### Cumulative Deaths by Country, 2020-2021
+
+Let's now look at the **cumulative deaths PMP** by **country**,
+
+```{r AP_country-deaths-pop, message = FALSE, fig.align='center', fig.cap="Figure 1.4 Cumulative Deaths by Country"}
+
+#Trend of deaths per million people
+AP %>% filter(deaths_PMP > 0) %>% ggplot(aes(x = date, y = deaths_PMP, color = Country)) + geom_point(size=1.2)  +  scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 0)) +  labs(y = "deaths per million people", x = NULL) + scale_x_date(date_breaks = "2 month", date_labels = "%b-%y")
+
+```
+Regarding to cumulative number of deaths per million people, we can observe that countries such as Bahrain, Oman and Kuwait are leading the region in number of deaths per million people, with steeper rates compared to countries like Saudi Arabia, UAE and Qatar. Again, Yemen is well behind in the cumulative number of deaths per population when compared to the other countries.
+
+
+### Total Number of Cases and Deaths by Country, 2020-2021
+
+After looking at the cumulative number of cases and deaths by country, let's take a look at the the **total number of cases and deaths PMP by country** and calculate the **rate of deaths per thousand cases (PTC)** since the pandemic began, 
+
+```{r AP_country-totals, fig.align='center'}
+
+# Summary 
+cou_max_cases <- AP %>% group_by(Country) %>% summarize(max_cases_PMP = round(max(cases_PMP),2), max_deaths_PMP = round(max(deaths_PMP),2)) %>% mutate(deaths_PTC = round((max_deaths_PMP*1000)/max_cases_PMP,2))
+
+# Country with the highest deaths PTC ratio
+cou_dptc_max <- cou_max_cases %>% filter(deaths_PTC == max(cou_max_cases$deaths_PTC)) 
+
+cou_hghst_dptc <- cou_dptc_max$Country
+
+rat_hghst_dptc <- cou_dptc_max$deaths_PTC
+
+# Country with the highest cases PMP
+cou_tcpmp_max <- cou_max_cases %>% filter(max_cases_PMP == max(max_cases_PMP)) 
+
+cou_hghst_tcpmp <- cou_tcpmp_max$Country
+
+rat_hghst_tcpmp <- cou_tcpmp_max$deaths_PTC
+
+# Country with the lowest cases PMP
+cou_tcpmp_min <- cou_max_cases %>% filter(max_cases_PMP == min(max_cases_PMP)) 
+
+cou_lwst_tcpmp <- cou_tcpmp_min$Country
+
+rat_lwst_tcpmp <- cou_tcpmp_min$deaths_PTC
+
+kable(cou_max_cases, col.names = c("Country", "Total_Cases_PMP", "Total_Deaths_PMP", "Deaths_PTC"), caption = "Table 1.1 Total Number of Cases and Deaths by Country")
+
+```
+
+In Table 1.1, we can realize that countries such as Bahrain, Kuwait, Qatar and UAE, which have experienced higher number of cumulative cases per population compared to Saudi Arabia, have a much lower ratio of deaths per thousand cases, which we could be as result of better prepared health facilities. Yemen values look too far from the rest of the neighbor countries, which reinforced its status as an outlier, creating doubts about the credibility of the data.
+
+
+### Seven-day Rolling Average of New Cases, 2020-2021
+
+After observing the patterns in the cumulative number of cases and deaths by country, we could assume that most of the countries have reached a steady rate. However, we will plot a seven-day rolling average of new cases per 100K people by country, to validate our assumption,
+
+```{r AP_7d-rolling-new-cases, message=FALSE, fig.align='center', fig.cap="Figure 1.5 Seven-day Rolling Average of New Cases per 100K People"}
+
+# Average of new cases per week
+AP_new_cases <- AP %>% filter(!is.na(new_cases)) %>% group_by(Country) %>% mutate(rwk_cases = (new_cases + lag(new_cases, n=1, default=0) + lag(new_cases, n=2, default=0) + lag(new_cases, n=3, default = 0) + lag(new_cases, n=4, default = 0) + lag(new_cases, n=5, default = 0) + lag(new_cases, n=6, default = 0))*100000/(7*Population)) %>% ungroup()
+
+# Visualizing results
+AP_new_cases %>% ggplot(aes(x = date, y = rwk_cases, color = Country)) + geom_line(size=0.8)  +  theme(legend.position = "bottom", axis.text.x = element_text(angle = 0)) +  labs(x = NULL, y = "new cases per 100K people") + scale_x_date(date_breaks = "2 month", date_labels = "%b-%y")
+
+```
+From Figure 1.5, we can observe that most of the countries have experienced fluctuations or waves with regards to new cases since the begin of the pandemic, being Saudi Arabia and Yemen the countries with the smoothest trends. Additionally, the recent surge in Bahrain's new cases, make us realize that the worst of the pandemic is not behind us, as new variants combined with lifting of lockdown restrictions, could sudden increase in the number of cases.   
+
+
+### Seven-day Rolling Average of New Deaths by Country, 2020-2021
+
+Last, let's plot a seven-day rolling average of new deaths per million people by country,
+```{r AP_7d-rolling-new-deaths, message=FALSE, fig.align='center', fig.cap="Figure 1.6 Seven-day Rolling Average of New Deaths per Million People"}
+
+# Average of new deaths per week
+AP_new_deaths <- AP %>% filter(!is.na(new_deaths)) %>% group_by(Country) %>% mutate(rwk_deaths = (new_deaths + lag(new_deaths, n=1, default=0) + lag(new_deaths, n=2, default=0) + lag(new_deaths, n=3, default = 0) + lag(new_deaths, n=4, default = 0) + lag(new_deaths, n=5, default = 0) + lag(new_deaths, n=6, default = 0))*1000000/(7*Population)) %>% ungroup()
+
+# Visualizing results
+AP_new_deaths %>% ggplot(aes(x = date, y = rwk_deaths, color = Country)) + geom_line(size=.8)  +    theme(legend.position = "bottom", axis.text.x = element_text(angle = 0)) +  labs(x = NULL, y = "new deaths per million people") + scale_x_date(date_breaks = "2 month", date_labels = "%b-%y")
+
+```
+Figure 1.6 reaffirms the finding that an increase in the number of new cases causes and increase of the number of new deaths, but the ratio deaths/cases across countries differs. 
+
+
+## Conclusions
+
+- In the Arabian Peninsula, the first scattered cases of Covid 19 were reported at the end of January 2020, with the first deaths reported in early March, followed by an exponential growth in the number of cases and deaths that lasted for about two months, then slowly leveling off until reaching a steady incremental rate of **`r cvd_rate`** cases per million people per day.
+
+- The Arabian Peninsula has experienced an estimated rate of **`r dvc_rate` deaths per thousand Covid-19 cases** since the beginning of the pandemic.
+
+- **Bahrain** was the first country in the peninsula to surpass the **100K cumulative cases per million people**, with a total of **`r rat_hghst_tcpmp`** cases per million people by `r format(Sys.time(), '%d %B %Y')`.
+
+- **Yemen** reported numbers are far apart from its neighbor countries, reporting the least cumulative number of cases and deaths per population in the region. However, it has the highest ratio of deaths per 1000 cases, with an estimated rate of **`r rat_hghst_dptc`** deaths per thousand cases. We could conclude that Yemen is an outlier in the region, and its numbers may not representative of the reality in the country.
+
+- **Saudi Arabia** has experienced lesser fluctuations in the number of new cases and deaths since August 2020 compared to the rest of the countries, with the lowest incremental rate of cumulative number of cases and deaths per million people. However, its has the second highest ratio of the deaths per thousand cases in the region, after Yemen. 
+
+- From the end of March 2021, **Bahrain** has been experiencing its worst increase in the number of new cases per million people since the beginning of the pandemic, jumping from 50 to 175 new cases per million people in just two months, with a similar proportion in the increase in the number of deaths, from 3 to 11 deaths per million people.
+
+
+### Sources of Bias
+
+It is important to mention that the dataset contains the number of cases and deaths reported by governments based on collected records from the health facilities across the countries. However, there are many asymptomatic cases or cases where people don't look for medical attention once they get sick, preferring being treated at home. 
+
+In the Arabian Peninsula, Yemen is a country in the middle of a civil war, with two political factions controlling different parts of the country but only one recognized by the international community, for that reason its numbers may only represent one part of the population of the country and not the country as a whole. 
+
+Regarding to personal bias, as resident of one of the countries in the region I may be inclined to favor my country above the others, when writing my observations and conclusions, by emphasizing its achievements while diminishing its failures.    
+
+### Session Information
+
+```{r session_infor}
+sessionInfo()
+```
