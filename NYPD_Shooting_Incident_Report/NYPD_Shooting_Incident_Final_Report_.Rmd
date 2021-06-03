@@ -1,0 +1,354 @@
+---
+title: "NYPD Shooting Incident Data Report"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=TRUE, message=FALSE}
+# Load Libraries
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+
+```
+
+## Dataset
+
+The [NYPD Shooting Incident Data (Historic)](https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic) dataset provides the list of every shooting incident that occurred in **New York City (NYC)** going back to 2006 through the end of 2020. The data was manually extracted every quarter and reviewed by the **Office of Management Analysis and Planning** before being posted on the **New York Police Department (NYPD)** website. Each record represents a shooting incident in NYC and includes information about the event, such as location, date/time of occurrence, and information related to perpetrator and victim demographics.
+
+## Exploration Analysis of the Dataset and Variables
+
+After reading in the dataset from the source, the first step is to get an understanding of the dataset application domain, structure and variables, with the aim of identifying any relevant prior knowledge requirement and set the objectives of the analysis.
+
+### Dataset structure
+
+Below a view of the dataset raw structure,
+
+```{r load-dataset, message=FALSE}
+# Load dataset from provided URL
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+raw_NSIDH <- read.csv(url_in)
+
+# Get an insigth of the dataset structure
+str(raw_NSIDH)
+```
+
+## Objectives of the Analysis
+
+From the dataset structure, we can observe that there are **`r ncol(raw_NSIDH)`** variables and **`r nrow(raw_NSIDH)`** observations in the dataset, which include information about:
+
+-   location of the incident,
+-   victim and perpetrator demographics,
+-   date and time of the incidents.
+
+For this analysis, we will focus our attention in getting an understanding of the nature of shooting activity in NYC, by:
+
+-   City and Boroughs,
+-   Demographic of victims and perpetrators,
+
+## Preprocessing
+
+### Dimensionality reduction
+
+Features related to spatial data (**X_COORD_CD**, **Y_COORD_CD**, **Latitude**, **Longitude** and **Lon_Lat**), precinct (**PRECINCT**), location description (**LOCATION_DESC**) and jurisdiction code (**JURISDICTION_CODE**) will be removed from the dataset, as they will not add value to the goal of the analysis.
+
+```{r tidy-data-features, message=FALSE}
+# Remove selected features
+pre_NSIDH <- raw_NSIDH %>% select(-c(PRECINCT, LOCATION_DESC, JURISDICTION_CODE, X_COORD_CD:Lon_Lat))
+
+```
+
+### Data type conversion
+
+After looking at the structure of the dataset, data fields such as: **OCCUR_DATE**, **OCCUR_TIME**, **PRECINCT**, **STATISTICAL_MURDER_FLAG** should to be converted to date, time, string and boolean data types respectively.
+
+```{r tidy-data-type, message=FALSE}
+
+# Data type convertion
+pre_NSIDH <- pre_NSIDH %>% mutate(OCCUR_DATE = mdy(OCCUR_DATE), OCCUR_TIME = hms(OCCUR_TIME), STATISTICAL_MURDER_FLAG = as.logical(STATISTICAL_MURDER_FLAG))
+
+```
+
+### Data cleaning
+
+#### Exploration analysis
+
+Let's take a look at the data pattern and/or ditribution of each variable to identify noises, missing values or any other abnormality,
+
+```{r chk-qual-vars, message=FALSE, eval=FALSE}
+
+# Look at the summary of quantitative variables:
+pre_NSIDH %>% select(OCCUR_DATE, OCCUR_TIME, STATISTICAL_MURDER_FLAG) %>% summary()
+
+# Look at the qualitatives variables:
+
+# BORO and PRECINCT
+pre_NSIDH %>% count(BORO)
+
+# PERP_AGE_GROUP
+pre_NSIDH %>% count(PERP_AGE_GROUP)
+
+# PERP_SEX
+pre_NSIDH %>% count(PERP_SEX)
+
+# PERP_RACE
+pre_NSIDH %>% count(PERP_RACE)
+
+# VIC_AGE_GROUP
+pre_NSIDH %>% count(VIC_AGE_GROUP)
+
+# VIC_SEX
+pre_NSIDH %>% count(VIC_SEX)
+
+# VIC_RACE
+pre_NSIDH %>% count(VIC_RACE)
+
+```
+
+#### Handling missing values and data noises
+
+From the the exploratory analysis of the variables **some missing values and noises were spotted** in variables: **PERP_AGE_GROUP**, **PERP_RACE** and **PERP_SEX**, to address those issues, we will carry out the following strategy:
+
+-   Replace **""** value by **"UNKNOWN"** for **PERP_AGE_GROUP** and **PERP_RACE** variables;
+-   Replace **""** value by **"U"** for **PERP_SEX**;
+-   Replace values **"1020"**, **"224"** and **"940"** by **"UNKNOWN"** for **PERP_AGE_GROUP** variable.
+
+```{r address-missing-values, message=FALSE}
+
+# Replace "" value by "UNKNOWN" for PERP_AGE_GROUP and PERP_RACE, and by "U" for PERP_SEX
+pre_NSIDH <- pre_NSIDH %>% mutate(PERP_AGE_GROUP = ifelse(PERP_AGE_GROUP == "", "UNKNOWN", PERP_AGE_GROUP), PERP_RACE = ifelse(PERP_RACE == "", "UNKNOWN", PERP_RACE), PERP_SEX = ifelse(PERP_SEX == "", "U", PERP_SEX))
+
+# Replace values "1020", "224" and "940" by "UNKNOWN" for PERP_AGE_GROUP
+pre_NSIDH <- pre_NSIDH %>% mutate(PERP_AGE_GROUP = ifelse(PERP_AGE_GROUP == "1020" | PERP_AGE_GROUP == "224" | PERP_AGE_GROUP == "940", "UNKNOWN", PERP_AGE_GROUP))
+```
+
+### Data Transformation
+
+#### Enriching the dataset
+
+Before proceeding with the visualization of the data pattern, we will read in a new dataset that contains the population of each demographic groups under analysis, with the aim of measuring the impact of the shooting activity per population. The dataset was prepared from the tables of the NYC demographic profile, US Census 2010; posted in the *NYC Department of City Planning* [website](%22https://www1.nyc.gov/site/planning/planning-level/nyc-population/census-2010.page%22).
+
+```{r enriching, message=FALSE}
+
+# Importing NYC demographic profile from US Census 2010
+# Data was extracted from url: https://www1.nyc.gov/site/planning/planning-level/nyc-population/census-2010.page
+# and converted into a csv file and posted in a public Github repository
+
+NYC_dem_profile_2010 <- read_csv("https://raw.githubusercontent.com/rojasael/DTSA-5301/main/NYPD_Shooting_Incident_Report/NYC_Demographic_Profile_Census2010.csv")
+
+# Creating a subset of borough incident and population
+NYC_dem_boro <- NYC_dem_profile_2010 %>% filter(Category == "Borough") %>% rename(BORO = Demographic_Group) %>% select(-c(Category))
+
+loc_NSIDH <- pre_NSIDH %>% left_join(NYC_dem_boro) %>% select(c(INCIDENT_KEY, OCCUR_DATE, OCCUR_TIME, BORO, Population, STATISTICAL_MURDER_FLAG))
+
+# Creating a subset of victim incident and population
+NYC_dem_vic <- NYC_dem_profile_2010 %>% filter(Category == "Race") %>% rename(VIC_RACE = Demographic_Group) %>% select(-c(Category))
+
+rvic_NSIDH <- pre_NSIDH %>% left_join(NYC_dem_vic) %>% select(c(INCIDENT_KEY, OCCUR_DATE, OCCUR_TIME, VIC_RACE, Population, STATISTICAL_MURDER_FLAG))
+
+```
+
+#### Summarization of number of incidents by demographic groups
+
+Now we will manipulate the data to calculate the number of incidents by each demographic group,
+
+```{r summarization, message=FALSE}
+
+# Summarizing the number of incidents by Boro and adding cumulative number of cases
+boro_NSIDH <- loc_NSIDH %>% count(OCCUR_DATE, BORO, Population) %>% rename(incidents = n)
+
+boro_NSIDH <- boro_NSIDH %>% group_by(OCCUR_DATE, BORO, Population) %>% summarize(incidents = sum(incidents)) %>% ungroup() 
+
+boro_NSIDH <- boro_NSIDH %>% group_by(BORO) %>% mutate(cum_incidents = cumsum(incidents)) %>% ungroup()
+
+# Summarizing the number of incidents by victim race and adding cumulative number of cases
+
+race_vic_NSIDH <- rvic_NSIDH %>% count(OCCUR_DATE, VIC_RACE, Population) %>% rename(incidents = n)
+
+race_vic_NSIDH <- race_vic_NSIDH %>% group_by(OCCUR_DATE, VIC_RACE, Population) %>% summarize(incidents = sum(incidents)) %>% ungroup() 
+
+race_vic_NSIDH <- race_vic_NSIDH %>% group_by(VIC_RACE) %>% mutate(cum_incidents = cumsum(incidents)) %>% ungroup()
+
+```
+
+#### Normalization of number of incidents by population
+
+```{r normalization, message=FALSE}
+
+# Add cumulative number of cases per 100K people
+boro_NSIDH <- boro_NSIDH %>% mutate(new_inc_phtp = ((incidents * 100000)/Population), cum_inc_phtp = ((cum_incidents * 100000)/Population))
+
+# Add cumulative number of cases per 100K people
+race_vic_NSIDH <- race_vic_NSIDH %>% mutate(new_inc_phtp = ((incidents * 100000)/Population), cum_inc_phtp = ((cum_incidents * 100000)/Population))
+
+```
+
+## Data Visualization and Analysis
+
+In this section, we are going to explore, visualize and analyze different data patterns that will help us to get the understanding required to formulate our conclusion,
+
+### NYC Shooting Activity, 2006-2020
+
+First, let's look at the trend of number of shooting incidents in NYC from 2006 to 2010,
+
+```{r NYC-new-inc-phtp, message=FALSE, fig.align='center', fig.cap="Figure 1.1 NYC Annual Shooting Incidents per 100K People"}
+# Number of incidents in NYC per year
+ni_NYC_NSIDH <- boro_NSIDH %>% group_by(year(OCCUR_DATE)) %>% summarize(new_inc_phtp = sum(new_inc_phtp)) %>% ungroup() %>% rename(Year = `year(OCCUR_DATE)`)
+
+# Linear regression for incidents from 2006 to 2019
+NYC_noi_0619 <- ni_NYC_NSIDH %>% filter(Year >= 2006 & Year <= 2019)
+
+LRM_NYC_noi <- lm(new_inc_phtp ~ Year, data = NYC_noi_0619)
+
+# Rate of incident per 100K people from 2006 to 2019
+ia_rate <- round(LRM_NYC_noi$coefficients["Year"],1)
+
+# Add prediction model into NSIDH_nyc_year
+NYC_noi_pred <- ni_NYC_NSIDH %>% mutate(pred = predict(LRM_NYC_noi, newdata = ni_NYC_NSIDH))
+
+# Visualization
+NYC_noi_pred %>%  ggplot(aes(x=Year)) + geom_line(aes(y = new_inc_phtp), colour = "blue") + geom_point(aes(y = new_inc_phtp), colour = "blue") + geom_line(aes(y = pred), color = "red") + theme(legend.position = "bottom") +  labs(x = "year", y = "incidents per 100K people") + scale_x_continuous(breaks = ni_NYC_NSIDH$Year)
+
+```
+
+We used a liner regression model to calculate the interannual decline rate of incidents per 100K people from 2006 to 2019. Below the summary of the linear regression model,
+
+```{r LRM, fig.align='center'}
+
+# Linear Regression Model
+summary(LRM_NYC_noi)
+
+```
+
+### NYC Shooting Activity by Borough, 2006-2020
+
+Second, let's look at the trends of the NYC boroughs,
+
+```{r boro-new-inc-phtp, message=FALSE, fig.align='center', fig.cap="Figure 1.2 Annual Incidents per 100K People by Borough"}
+
+# Number of incidents by boro per year
+ni_boro_NSIDH <- boro_NSIDH %>% group_by(BORO, year(OCCUR_DATE)) %>% summarize(new_inc_phtp = sum(new_inc_phtp)) %>% ungroup() %>% rename(Year = `year(OCCUR_DATE)`)
+
+ni_boro_NSIDH %>%  ggplot(aes(x = Year, y = new_inc_phtp, color = BORO)) + geom_line(aes(y = new_inc_phtp, color = BORO)) + geom_point(aes(y = new_inc_phtp, color = BORO)) + theme(legend.position = "bottom") +  labs(x = "year", y = "incidents per 100K people", color = "Borough") + scale_x_continuous(breaks = ni_NYC_NSIDH$Year)
+
+```
+
+```{r boro-cum-inc-phtp, fig.align='center', fig.cap="Figure 1.4 Figure 1.3 Cumulative Incidents per 100K People by Borough"}
+
+# Cumulative number of incidents by boro per year
+boro_NSIDH %>% ggplot(aes(x = OCCUR_DATE, y = cum_inc_phtp, color = BORO)) + geom_line(aes(y = cum_inc_phtp, color = BORO)) + theme(legend.position = "bottom") +  labs(x = "year", y = "incidents per 100K people", color = "Borough") + scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+
+```
+
+### NYC Shooting Activity by Victim Race Group, 2006-2020
+
+Third, let's visualize the number of incidents by victim race group,
+
+```{r vic-race, message = FALSE, fig.align='center', fig.cap="Figure 1.4 Annual Number of Incidents per 100K People by Victim Race"}
+
+#Number of incidents by victim race per year
+ni_race_vic_NSIDH <- race_vic_NSIDH %>% group_by(VIC_RACE, year(OCCUR_DATE)) %>% summarize(new_inc_phtp = sum(new_inc_phtp)) %>% ungroup() %>% rename(Year = `year(OCCUR_DATE)`) %>% filter(VIC_RACE != "UNKNOWN")
+
+ni_race_vic_NSIDH %>%  ggplot(aes(x = Year, y = new_inc_phtp, color = VIC_RACE)) + geom_line(aes(y = new_inc_phtp, color = VIC_RACE)) + geom_point(aes(y = new_inc_phtp, color = VIC_RACE)) + theme(legend.position = "bottom") +  labs(x = "year", y = "incidents per 100K people", color = "Victim Race") + scale_x_continuous(breaks = ni_NYC_NSIDH$Year) + scale_y_log10()
+
+```
+
+### NYC Shooting Activity by Victim Age Groups and Gender,
+
+Four, let's look at the distribution of incidents by victim age group and gender,
+
+```{r vic-age-sex, message = FALSE, fig.align='center', fig.cap="Figure 1.5 Number of Incidents by Victim Age Group and Gender"}
+
+pre_NSIDH %>% ggplot(aes(VIC_AGE_GROUP, ..count..)) + geom_bar(aes(fill = VIC_SEX), position = "dodge") + scale_y_log10() + theme(legend.position = "bottom") + labs(x = "Victim Age Group", y = "Count", fill = "Victim Sex")
+
+```
+
+
+### NYC Shooting Activity by Perpetrator Age Groups and Gender,
+
+Fifth, let's look at the distribution of incidents by victim age group and gender,
+
+```{r perp-age-sex, message = FALSE, fig.align='center', fig.cap="Figure 1.6 Number of Incidents by Perpetrator Age Group and Gender"}
+
+pre_NSIDH %>% ggplot(aes(PERP_AGE_GROUP, ..count..)) + geom_bar(aes(fill = PERP_SEX), position = "dodge") + scale_y_log10() + theme(legend.position = "bottom") + labs(x = "Perpetrator Age Group", y = "Count", fill = "Perpetrator Sex")
+
+```
+
+
+### Correlation between Perpetrator and Victim Race Groups,
+
+Sixth, let's look at the correlation between perpetrator and victim race groups,
+
+```{r vic-pep-mur, message = FALSE, fig.align='center', fig.cap="Figure 1.7 Correlation between Perpetrator and Victim Race Groups"}
+
+# Correlation matrix between victim race and perpetrator race
+pre_NSIDH %>% ggplot(aes(PERP_RACE, VIC_RACE)) + geom_count(color="darkorchid4") + theme(legend.position = "bottom", axis.text.x = element_text(angle = 15, size = 7), axis.text.y = element_text(angle = 0, size = 7)) + scale_size_area(max_size = 10) + labs(x = "Perpetrator Race", y = "Victim Race")
+
+# Percentage of perpetrator data classified as "Unknown"
+
+# Number of incidents in NYC per year
+perp_NYC_NSIDH <- pre_NSIDH %>% count(PERP_AGE_GROUP, PERP_SEX, PERP_RACE) %>% mutate(Unknown = (PERP_RACE == "UNKNOWN")) %>% group_by(Unknown) %>% summarise(n = sum(n))
+
+prop_unknown <- round(100*sum(perp_NYC_NSIDH %>% filter(Unknown == TRUE)) / sum(perp_NYC_NSIDH$n),1)
+
+```
+
+
+### NYC Shooting Activity Distribution by Month,
+
+Seventh, let's look at the distribution of incidents by months,
+
+```{r inc-month, message = FALSE, fig.align='center', fig.cap="Figure 1.8 Shooting Activity Distribution by Month"}
+
+pre_NSIDH %>% ggplot(aes(month(OCCUR_DATE))) + geom_bar(fill="darkorchid4") + theme(legend.position = "bottom", axis.text.x = element_text(angle = 15, size = 9)) + scale_x_discrete(limits = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")) + labs(x = "Month", y = "Count")
+
+```
+
+
+### NYC Shooting Activity Distribution by Day Hours,
+
+Last, let's look at the distribution of incidents by day hours,
+
+```{r inc-day, message = FALSE, fig.align='center', fig.cap="Figure 1.9 Shooting Activity Distribution by Day-Hour"}
+
+pre_NSIDH %>% ggplot(aes(hour(OCCUR_TIME))) + geom_bar(bins = 24, fill = "darkorchid4") + theme(legend.position = "bottom", axis.text.x = element_text(angle = 0, size = 9)) + scale_x_continuous(breaks = c(0:23)) + labs(x = "Hour", y = "Count")
+
+```
+
+
+### Conclusion
+
+-   NYC experienced a steady reduction in the number of shooting incidents across all its boroughs from 2006 to 2019, with an estimated interannual decline rate of **`r ia_rate` incidents per 100K people**. However, the number of incidents rebounded sharply in 2020, deleting almost all the progress achieved during the previous 8 years.
+
+-   When looking at the performance of the boroughs in 2020, whatever the cause of the increase, it affected all boroughs in almost the same proportion.
+
+-   **Bronx** is the NYC borough with the highest number of incidents per 100K people in the last 14 years, followed closely by **Brooklyn**; while **Manhattan**, **Queens** and **Staten Island** have experience a similar rate of shooting activity since 2006; being **Staten Island** the borough with the least prevalence in the shooting activity.
+
+-   **Black** and **Black Hispanic** are the racial groups with highest number of victims per 100K people, followed by the **White Hispanic** group; while **White**, **Asian / Pacific Islander** and **American Indian / Alaskan Native** are the groups with the lowest number of victims.
+
+-   Since 2006, most of the victims are male, age between 18 and 44 years old. While female, in much less proportion, follows a similar pattern in the prevalence of the age groups victim of the shooting activity.
+
+-   Since 2006, in most of the cases the **perpetrator** and the **victim** belong to the **same racial group or ethnicity group**.
+
+-   In **`r prop_unknown`%** of the reported incidents, the perpetrator racial profile is unknown, where most of its victims were from **Black** racial group or **Hispanic** ethnicity group.
+
+-   Most of shooting incidents in NYC occur during summer season, at nighttime from 19:00 to 4:00.
+
+
+### Possible Sources of Bias
+
+In my opinion, the main source of bias in the dataset is in the classification of the victim and perpetrator by race, as the classification depends on the personal perception of the person who reported the incident, either by the police officer(s) at the crime scene or information collected from witnesses of the incident. However, due to the disproportionately depict in the media of certain racial groups as criminals, and others as victims, people perception is highly suggestive to bias while reporting a crime.
+
+Another potential source of bias is the benchmarking of demographic groups without taking into consideration each group population.
+
+### Personal Bias and Mitigations
+
+My main challenge was how to write the report in a language that is, as much as possible, free of bias, especially when referring to racial groups. To mitigate any possible bias in my writing I consulted and applied the **APA Style** guideline for bias-free language regarding to [Racial and Ethnic Identity](https://apastyle.apa.org/style-grammar-guidelines/bias-free-language/racial-ethnic-minorities).
+
+Another source of personal bias was on how to deal with missing values and data noises, which affected mostly perpetrator data. I tried to minimize the impact of the personal bias by not eliminating the records but classifying them as "unknown".
+
+```{r session_infor}
+sessionInfo()
+```
